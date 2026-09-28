@@ -9,6 +9,7 @@ MODEL_PATH="${MODEL_PATH:-open-unlearning/tofu_${MODEL}_full}"
 RETAIN_LOGS_PATH="${RETAIN_LOGS_PATH:-saves/eval/tofu_${MODEL}_${RETAIN_SPLIT}/TOFU_EVAL.json}"
 SEED="${SEED:-0}"
 OPTIMIZER="${OPTIMIZER:-adamw_torch}"
+REPORT_TO="${REPORT_TO:-none}"
 TOFU_LOCAL_DIR="${TOFU_LOCAL_DIR:-$PWD/data/tofu_offline}"
 
 if [[ -d "${TOFU_LOCAL_DIR}" ]]; then
@@ -51,6 +52,7 @@ python src/train.py --config-name=unlearn.yaml \
   retain_logs_path="${RETAIN_LOGS_PATH}" \
   trainer.args.seed="${SEED}" \
   trainer.args.optim="${OPTIMIZER}" \
+  trainer.args.report_to="${REPORT_TO}" \
   task_name="NPO_BASELINE_${FORGET_SPLIT}_SEED${SEED}"
 
 # Treatment: only the per-example forget strength changes.
@@ -65,4 +67,5 @@ python src/train.py --config-name=unlearn.yaml \
   graph_weights_path="${GRAPH_PATH}" \
   trainer.args.seed="${SEED}" \
   trainer.args.optim="${OPTIMIZER}" \
+  trainer.args.report_to="${REPORT_TO}" \
   task_name="GRAPH_NPO_${FORGET_SPLIT}_SEED${SEED}"

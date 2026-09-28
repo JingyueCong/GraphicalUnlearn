@@ -1,0 +1,12 @@
+defaults:
+  - GradDiff
+
+handler: GraphNPO
+method_args:
+  graph_weights_path: ${graph_weights_path}
+  beta: 0.1
+  alpha: 1.0
+  gamma: 1.0
+  retain_loss_type: NLL
+  strict_index: true
+  normalize_batch_weights: false

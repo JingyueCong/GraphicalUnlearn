@@ -8,6 +8,7 @@ GRAPH_PATH="${GRAPH_PATH:-artifacts/graphs/${FORGET_SPLIT}_tfidf_pagerank.json}"
 MODEL_PATH="${MODEL_PATH:-open-unlearning/tofu_${MODEL}_full}"
 RETAIN_LOGS_PATH="${RETAIN_LOGS_PATH:-saves/eval/tofu_${MODEL}_${RETAIN_SPLIT}/TOFU_EVAL.json}"
 SEED="${SEED:-0}"
+OPTIMIZER="${OPTIMIZER:-adamw_torch}"
 
 if [[ ! -f "${RETAIN_LOGS_PATH}" ]]; then
   echo "Missing retain-model evaluation log: ${RETAIN_LOGS_PATH}" >&2
@@ -32,6 +33,7 @@ python src/train.py --config-name=unlearn.yaml \
   retain_split="${RETAIN_SPLIT}" \
   retain_logs_path="${RETAIN_LOGS_PATH}" \
   trainer.args.seed="${SEED}" \
+  trainer.args.optim="${OPTIMIZER}" \
   task_name="NPO_BASELINE_${FORGET_SPLIT}_SEED${SEED}"
 
 # Treatment: only the per-example forget strength changes.
@@ -45,4 +47,5 @@ python src/train.py --config-name=unlearn.yaml \
   retain_logs_path="${RETAIN_LOGS_PATH}" \
   graph_weights_path="${GRAPH_PATH}" \
   trainer.args.seed="${SEED}" \
+  trainer.args.optim="${OPTIMIZER}" \
   task_name="GRAPH_NPO_${FORGET_SPLIT}_SEED${SEED}"

@@ -40,7 +40,9 @@ FORGET_SPLIT=forget01 RETAIN_SPLIT=retain99 \
 Use `SEED=0`, `SEED=1`, and `SEED=2` for the final matched comparison. The
 script also accepts `MODEL`, `MODEL_PATH`, `GRAPH_PATH`, and
 `RETAIN_LOGS_PATH` overrides. It uses `adamw_torch` by default so the matched
-runs do not depend on bitsandbytes; set `OPTIMIZER` to override it.
+runs do not depend on bitsandbytes; set `OPTIMIZER` to override it. On an
+offline host, place TOFU JSONL files in `data/tofu_offline/` or set
+`TOFU_LOCAL_DIR` to another directory.
 
 The graph artifact is written under `artifacts/graphs/`. Both training jobs use
 the same OpenUnlearning evaluation configuration.

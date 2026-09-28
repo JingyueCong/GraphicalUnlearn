@@ -2,6 +2,8 @@ import torch
 import datasets
 import numpy as np
 import logging
+import os
+from pathlib import Path
 from typing import List, Dict, Any, Union
 
 IGNORE_INDEX = -100  # TODO put in common constants
@@ -10,6 +12,25 @@ logger = logging.getLogger("data")
 
 
 def load_hf_dataset(path, **kwargs):
+    tofu_local_dir = os.getenv("TOFU_LOCAL_DIR")
+    if path == "locuslab/TOFU" and tofu_local_dir:
+        local_args = dict(kwargs)
+        dataset_name = local_args.pop("name", None)
+        split = local_args.pop("split", "train")
+        if dataset_name is None:
+            raise ValueError("A TOFU dataset name is required with TOFU_LOCAL_DIR")
+        data_file = Path(tofu_local_dir) / f"{dataset_name}.json"
+        if not data_file.is_file():
+            raise FileNotFoundError(f"Local TOFU split not found: {data_file}")
+        local_cache_dir = os.getenv("TOFU_LOCAL_CACHE_DIR")
+        if local_cache_dir:
+            local_args.setdefault("cache_dir", local_cache_dir)
+        return datasets.load_dataset(
+            "json",
+            data_files={split: str(data_file)},
+            split=split,
+            **local_args,
+        )
     dataset = datasets.load_dataset(path, **kwargs)
     return dataset
 

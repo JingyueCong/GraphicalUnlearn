@@ -17,6 +17,8 @@ from collections import Counter
 from pathlib import Path
 from typing import Iterable
 
+import networkx as nx
+
 
 TOKEN_PATTERN = re.compile(r"(?u)\b\w\w+\b")
 
@@ -37,6 +39,8 @@ def parse_args():
     parser.add_argument("--tolerance", type=float, default=1e-10)
     parser.add_argument("--weight-floor", type=float, default=0.25)
     parser.add_argument("--weight-ceiling", type=float, default=4.0)
+    parser.add_argument("--community-resolution", type=float, default=1.0)
+    parser.add_argument("--community-seed", type=int, default=0)
     parser.add_argument("--output", type=Path, required=True)
     return parser.parse_args()
 
@@ -168,6 +172,35 @@ def normalize_weights(scores, floor, ceiling):
     return [weight / clipped_mean for weight in normalized]
 
 
+def detect_communities(num_nodes, edges, resolution=1.0, seed=0):
+    """Return deterministic Louvain community labels for every graph node."""
+    graph = nx.Graph()
+    graph.add_nodes_from(range(num_nodes))
+    graph.add_weighted_edges_from(
+        (edge["source"], edge["target"], edge["weight"]) for edge in edges
+    )
+    if graph.number_of_edges() == 0:
+        communities = [{node} for node in graph.nodes]
+    else:
+        communities = nx.community.louvain_communities(
+            graph,
+            weight="weight",
+            resolution=resolution,
+            seed=seed,
+        )
+    communities = sorted((sorted(group) for group in communities), key=lambda x: x[0])
+    labels = {
+        str(node): community_id
+        for community_id, group in enumerate(communities)
+        for node in group
+    }
+    sizes = {
+        str(community_id): len(group)
+        for community_id, group in enumerate(communities)
+    }
+    return labels, sizes
+
+
 def main():
     args = parse_args()
     if args.top_k < 1:
@@ -176,6 +209,8 @@ def main():
         raise ValueError("--damping must be in [0, 1)")
     if not 0.0 < args.weight_floor <= args.weight_ceiling:
         raise ValueError("Weight bounds must satisfy 0 < floor <= ceiling")
+    if args.community_resolution <= 0:
+        raise ValueError("--community-resolution must be positive")
 
     records = load_records(args)
     documents = make_documents(records, args.question_key, args.answer_key)
@@ -192,6 +227,12 @@ def main():
         tolerance=args.tolerance,
     )
     weights = normalize_weights(scores, args.weight_floor, args.weight_ceiling)
+    communities, community_sizes = detect_communities(
+        num_nodes=len(records),
+        edges=edges,
+        resolution=args.community_resolution,
+        seed=args.community_seed,
+    )
 
     payload = {
         "version": 1,
@@ -210,11 +251,16 @@ def main():
             "damping": args.damping,
             "weight_floor": args.weight_floor,
             "weight_ceiling": args.weight_ceiling,
+            "community_resolution": args.community_resolution,
+            "community_seed": args.community_seed,
         },
         "num_nodes": len(records),
         "num_edges": len(edges),
+        "num_communities": len(community_sizes),
         "weights": {str(index): weight for index, weight in enumerate(weights)},
         "pagerank": {str(index): score for index, score in enumerate(scores)},
+        "communities": communities,
+        "community_sizes": community_sizes,
         "edges": edges,
     }
     args.output.parent.mkdir(parents=True, exist_ok=True)
@@ -223,8 +269,9 @@ def main():
         handle.write("\n")
 
     print(
-        f"Wrote {len(records)} nodes, {len(edges)} edges, and "
-        f"{len(weights)} weights to {args.output}"
+        f"Wrote {len(records)} nodes, {len(edges)} edges, "
+        f"{len(community_sizes)} communities, and {len(weights)} weights "
+        f"to {args.output}"
     )
 
 

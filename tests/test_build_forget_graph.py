@@ -40,6 +40,18 @@ class ForgetGraphTest(unittest.TestCase):
         self.assertEqual(scores, [1.0])
         self.assertEqual(weights, [1.0])
 
+    def test_community_detection_covers_every_node(self):
+        edges = [
+            {"source": 0, "target": 1, "weight": 1.0},
+            {"source": 2, "target": 3, "weight": 1.0},
+        ]
+        communities, sizes = GRAPH.detect_communities(4, edges, seed=0)
+
+        self.assertEqual(set(communities), {"0", "1", "2", "3"})
+        self.assertEqual(communities["0"], communities["1"])
+        self.assertEqual(communities["2"], communities["3"])
+        self.assertEqual(sum(sizes.values()), 4)
+
 
 if __name__ == "__main__":
     unittest.main()

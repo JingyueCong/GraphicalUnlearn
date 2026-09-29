@@ -1,0 +1,24 @@
+defaults:
+  - GradDiff
+
+handler: GraphCoverageNPO
+method_args:
+  graph_weights_path: ${graph_weights_path}
+  beta: 0.1
+  gamma: 1.0
+  alpha: 1.0
+  retain_loss_type: NLL
+  residual_temperature: 1.0
+  residual_ema_decay: 0.9
+  propagation_strength: 0.3
+  community_balance_power: 1.0
+  weight_floor: 0.5
+  weight_ceiling: 2.0
+  normalize_batch_weights: true
+  strict_index: true
+  adaptive_retain: true
+  retain_budget: 0.05
+  adaptive_alpha_lr: 0.05
+  alpha_min: 1.0
+  alpha_max: 4.0
+  diagnostic_interval: 10

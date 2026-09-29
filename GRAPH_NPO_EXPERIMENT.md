@@ -110,6 +110,19 @@ python scripts/build_model_memory_graph.py \
 The run script builds this artifact automatically when it is missing. Set
 `GRAPH_TYPE=tfidf` to run a controlled ablation with the old graph.
 
+Create a topology-control graph that preserves the exact node degrees and edge
+weight distribution while randomly rewiring the edges:
+
+```bash
+python scripts/randomize_forget_graph.py \
+  --input artifacts/graphs/forget10_model_memory.json \
+  --output artifacts/graphs/forget10_model_memory_randomized.json \
+  --seed 0
+```
+
+Running the same trainer with this artifact separates the effect of meaningful
+model-memory neighborhoods from generic graph smoothing.
+
 Run only the new treatment (the completed NPO run remains the single baseline):
 
 ```bash

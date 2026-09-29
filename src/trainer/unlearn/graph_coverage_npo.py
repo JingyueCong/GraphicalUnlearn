@@ -96,6 +96,9 @@ class GraphCoverageNPO(GradDiff):
         self._last_batch_weights = None
         self._last_retain_violation = 0.0
         self._coverage_updates = 0
+        self._optimizer_updates = 0
+        self._retain_violation_sum = 0.0
+        self._retain_violation_count = 0
 
         if self.ref_model is None:
             self.ref_model = self._prepare_ref_model(self.model)
@@ -264,21 +267,56 @@ class GraphCoverageNPO(GradDiff):
         self._last_batch_weights = weights.detach().float().cpu()
         return weights
 
-    def _update_adaptive_alpha(self, retain_loss, reference_retain_loss=None):
-        if not self.adaptive_retain:
-            return self.current_alpha
+    def _retain_violation(self, retain_loss, reference_retain_loss=None):
         if reference_retain_loss is None:
             reference_value = 0.0
         else:
             reference_value = float(reference_retain_loss.detach())
-        violation = float(retain_loss.detach()) - reference_value - self.retain_budget
+        return float(retain_loss.detach()) - reference_value - self.retain_budget
+
+    def _apply_alpha_update(self, violation):
         self._last_retain_violation = violation
+        if not self.adaptive_retain:
+            return self.current_alpha
         bounded_violation = max(-1.0, min(1.0, violation))
         updated = self.current_alpha * math.exp(
             self.adaptive_alpha_lr * bounded_violation
         )
         self.current_alpha = min(self.alpha_max, max(self.alpha_min, updated))
         return self.current_alpha
+
+    def _is_optimizer_step_boundary(self):
+        accelerator = getattr(self, "accelerator", None)
+        if accelerator is not None and hasattr(accelerator, "sync_gradients"):
+            return bool(accelerator.sync_gradients)
+        gradient_accumulation_steps = max(
+            1,
+            int(
+                getattr(
+                    getattr(self, "args", None),
+                    "gradient_accumulation_steps",
+                    1,
+                )
+            ),
+        )
+        return self._retain_violation_count >= gradient_accumulation_steps
+
+    def _record_retain_violation(self, retain_loss, reference_retain_loss=None):
+        if not self.adaptive_retain:
+            return False
+
+        violation = self._retain_violation(retain_loss, reference_retain_loss)
+        self._retain_violation_sum += violation
+        self._retain_violation_count += 1
+        if not self._is_optimizer_step_boundary():
+            return False
+
+        mean_violation = self._retain_violation_sum / self._retain_violation_count
+        self._retain_violation_sum = 0.0
+        self._retain_violation_count = 0
+        self._optimizer_updates += 1
+        self._apply_alpha_update(mean_violation)
+        return True
 
     def compute_loss(
         self, model, inputs, return_outputs=False, num_items_in_batch=None
@@ -325,21 +363,30 @@ class GraphCoverageNPO(GradDiff):
         if self.adaptive_retain and self.retain_loss_type == "NLL":
             with torch.no_grad():
                 reference_retain_loss = self.ref_model(**retain_inputs).loss
-        alpha = self._update_adaptive_alpha(retain_loss, reference_retain_loss)
+        # The current coefficient applies to every micro-batch in this optimizer
+        # step.  The averaged constraint violation updates alpha for the next
+        # optimizer step only, avoiding a gradient-accumulation-dependent rate.
+        alpha = self.current_alpha
+        alpha_updated = self._record_retain_violation(
+            retain_loss, reference_retain_loss
+        )
 
         self._coverage_updates += 1
         if (
             self.diagnostic_interval
-            and self._coverage_updates % self.diagnostic_interval == 0
+            and alpha_updated
+            and self._optimizer_updates % self.diagnostic_interval == 0
         ):
             logger.info(
-                "coverage update=%d weights[min=%.4f mean=%.4f max=%.4f] "
+                "optimizer update=%d microbatches=%d "
+                "weights[min=%.4f mean=%.4f max=%.4f] "
                 "alpha=%.4f retain_violation=%.4f",
+                self._optimizer_updates,
                 self._coverage_updates,
                 float(weights.min()),
                 float(weights.mean()),
                 float(weights.max()),
-                alpha,
+                self.current_alpha,
                 self._last_retain_violation,
             )
 

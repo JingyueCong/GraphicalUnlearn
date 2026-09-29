@@ -49,6 +49,10 @@ class GraphCoverageNPOTest(unittest.TestCase):
         trainer._last_batch_weights = None
         trainer.diagnostic_interval = 0
         trainer._coverage_updates = 0
+        trainer._optimizer_updates = 0
+        trainer._retain_violation_sum = 0.0
+        trainer._retain_violation_count = 0
+        trainer.args = SimpleNamespace(gradient_accumulation_steps=1)
         return trainer
 
     def test_loads_edges_and_communities(self):
@@ -92,7 +96,7 @@ class GraphCoverageNPOTest(unittest.TestCase):
 
         self.assertGreater(float(weights[0]), float(weights[1]))
 
-    def test_adaptive_alpha_increases_on_retain_violation(self):
+    def test_adaptive_alpha_updates_once_after_gradient_accumulation(self):
         trainer = GraphCoverageNPO.__new__(GraphCoverageNPO)
         trainer.adaptive_retain = True
         trainer.retain_budget = 0.05
@@ -101,12 +105,26 @@ class GraphCoverageNPOTest(unittest.TestCase):
         trainer.alpha_min = 1.0
         trainer.alpha_max = 4.0
         trainer._last_retain_violation = 0.0
+        trainer._optimizer_updates = 0
+        trainer._retain_violation_sum = 0.0
+        trainer._retain_violation_count = 0
+        trainer.args = SimpleNamespace(gradient_accumulation_steps=4)
 
-        alpha = trainer._update_adaptive_alpha(
+        for _ in range(3):
+            updated = trainer._record_retain_violation(
+                torch.tensor(2.0), torch.tensor(1.0)
+            )
+            self.assertFalse(updated)
+            self.assertEqual(trainer.current_alpha, 1.0)
+
+        updated = trainer._record_retain_violation(
             torch.tensor(2.0), torch.tensor(1.0)
         )
-        self.assertGreater(alpha, 1.0)
+        self.assertTrue(updated)
+        self.assertGreater(trainer.current_alpha, 1.0)
         self.assertAlmostEqual(trainer._last_retain_violation, 0.95, places=6)
+        self.assertEqual(trainer._optimizer_updates, 1)
+        self.assertEqual(trainer._retain_violation_count, 0)
 
     def test_objective_runs_backward(self):
         torch.manual_seed(0)
@@ -128,6 +146,9 @@ class GraphCoverageNPOTest(unittest.TestCase):
         trainer.retain_budget = 0.05
         trainer.adaptive_alpha_lr = 0.05
         trainer._last_retain_violation = 0.0
+        trainer._optimizer_updates = 0
+        trainer._retain_violation_sum = 0.0
+        trainer._retain_violation_count = 0
         trainer.retain_loss_type = "NLL"
         trainer.ref_model = reference
 

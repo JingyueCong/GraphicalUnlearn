@@ -11,6 +11,7 @@ SEED="${SEED:-0}"
 OPTIMIZER="${OPTIMIZER:-adamw_torch}"
 REPORT_TO="${REPORT_TO:-none}"
 TOFU_LOCAL_DIR="${TOFU_LOCAL_DIR:-$PWD/data/tofu_offline}"
+TASK_NAME="${TASK_NAME:-GRAPH_COVERAGE_NPO_${FORGET_SPLIT}_SEED${SEED}}"
 
 if [[ -d "${TOFU_LOCAL_DIR}" ]]; then
   export TOFU_LOCAL_DIR
@@ -59,4 +60,4 @@ python src/train.py --config-name=unlearn.yaml \
   trainer.args.seed="${SEED}" \
   trainer.args.optim="${OPTIMIZER}" \
   trainer.args.report_to="${REPORT_TO}" \
-  task_name="GRAPH_COVERAGE_NPO_${FORGET_SPLIT}_SEED${SEED}"
+  task_name="${TASK_NAME}"

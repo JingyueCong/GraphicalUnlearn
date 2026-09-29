@@ -85,6 +85,16 @@ examples were forgotten, but did not improve the final trade-off over NPO.
 - an adaptive retain coefficient increases when retain NLL exceeds a fixed
   budget over the reference model.
 
+The adaptive coefficient is updated once per optimizer step from the mean
+violation over all gradient-accumulation micro-batches. This keeps its update
+rate independent of `gradient_accumulation_steps`; the updated coefficient is
+used starting with the next optimizer step.
+
+The balanced configuration uses a `0.10` retain budget, caps the adaptive
+coefficient at `2.0`, and reacts faster to current forgetting residuals. It is
+intended to recover more forgetting than the initial high-utility run while
+retaining its utility advantage.
+
 The graph builder now stores deterministic Louvain community assignments. Old
 artifacts are rebuilt automatically by the new run script.
 
@@ -105,7 +115,15 @@ Useful method overrides include:
 ```bash
 python src/train.py --config-name=unlearn.yaml \
   experiment=unlearn/tofu/graph_coverage_npo \
-  trainer.method_args.propagation_strength=0.3 \
-  trainer.method_args.residual_temperature=1.0 \
-  trainer.method_args.retain_budget=0.05
+  trainer.method_args.propagation_strength=0.2 \
+  trainer.method_args.residual_temperature=0.5 \
+  trainer.method_args.retain_budget=0.10
+```
+
+Set `TASK_NAME` when comparing variants so an existing result is not
+overwritten:
+
+```bash
+TASK_NAME=GRAPH_COVERAGE_NPO_BALANCED_forget10_SEED0 \
+  bash scripts/run_graph_coverage_npo_tofu.sh
 ```

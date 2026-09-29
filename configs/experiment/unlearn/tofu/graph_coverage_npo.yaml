@@ -18,7 +18,7 @@ retain_split: retain90
 holdout_split: holdout10
 retain_logs_path: null
 question_key: "question"
-graph_weights_path: artifacts/graphs/${forget_split}_tfidf_pagerank.json
+graph_weights_path: artifacts/graphs/${forget_split}_model_memory.json
 
 eval:
   tofu:

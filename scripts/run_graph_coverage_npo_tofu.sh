@@ -4,8 +4,13 @@ set -euo pipefail
 FORGET_SPLIT="${FORGET_SPLIT:-forget10}"
 RETAIN_SPLIT="${RETAIN_SPLIT:-retain90}"
 MODEL="${MODEL:-Llama-3.2-1B-Instruct}"
-GRAPH_PATH="${GRAPH_PATH:-artifacts/graphs/${FORGET_SPLIT}_tfidf_pagerank.json}"
 MODEL_PATH="${MODEL_PATH:-open-unlearning/tofu_${MODEL}_full}"
+GRAPH_TYPE="${GRAPH_TYPE:-model_memory}"
+if [[ "${GRAPH_TYPE}" == "model_memory" ]]; then
+  GRAPH_PATH="${GRAPH_PATH:-artifacts/graphs/${FORGET_SPLIT}_model_memory.json}"
+else
+  GRAPH_PATH="${GRAPH_PATH:-artifacts/graphs/${FORGET_SPLIT}_tfidf_pagerank.json}"
+fi
 RETAIN_LOGS_PATH="${RETAIN_LOGS_PATH:-saves/eval/tofu_${MODEL}_${RETAIN_SPLIT}/TOFU_EVAL.json}"
 SEED="${SEED:-0}"
 OPTIMIZER="${OPTIMIZER:-adamw_torch}"
@@ -34,8 +39,19 @@ for split in "${FORGET_SPLIT}" "${RETAIN_SPLIT}" "holdout10"; do
 done
 
 # Older GraphNPO artifacts do not contain communities. Rebuild those once.
+# Model-memory graphs use answer-token hidden states from the same base model
+# as unlearning. TF-IDF remains available for controlled ablations.
 if [[ ! -f "${GRAPH_PATH}" ]] || ! grep -q '"communities"' "${GRAPH_PATH}"; then
-  if [[ -f "${TOFU_LOCAL_DIR}/${FORGET_SPLIT}.json" ]]; then
+  if [[ "${GRAPH_TYPE}" == "model_memory" ]]; then
+    if [[ ! -f "${TOFU_LOCAL_DIR}/${FORGET_SPLIT}.json" ]]; then
+      echo "Model-memory graph construction requires an offline JSONL split" >&2
+      exit 1
+    fi
+    python scripts/build_model_memory_graph.py \
+      --input-jsonl "${TOFU_LOCAL_DIR}/${FORGET_SPLIT}.json" \
+      --model-path "${MODEL_PATH}" \
+      --output "${GRAPH_PATH}"
+  elif [[ -f "${TOFU_LOCAL_DIR}/${FORGET_SPLIT}.json" ]]; then
     python scripts/build_forget_graph.py \
       --input-jsonl "${TOFU_LOCAL_DIR}/${FORGET_SPLIT}.json" \
       --output "${GRAPH_PATH}"

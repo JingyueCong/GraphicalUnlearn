@@ -10,11 +10,12 @@ method_args:
   retain_loss_type: NLL
   residual_temperature: 0.5
   residual_ema_decay: 0.7
-  propagation_strength: 0.2
-  community_balance_power: 1.0
-  weight_floor: 0.5
-  weight_ceiling: 2.0
-  normalize_batch_weights: true
+  propagation_strength: 0.3
+  propagation_interval: 10
+  community_balance_power: 0.0
+  weight_floor: 0.4
+  weight_ceiling: 2.5
+  normalize_global_weights: true
   strict_index: true
   adaptive_retain: true
   retain_budget: 0.10

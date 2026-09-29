@@ -75,13 +75,14 @@ configuration.
 
 The first matched run showed that static PageRank weights affected which
 examples were forgotten, but did not improve the final trade-off over NPO.
-`GraphCoverageNPO` is the next treatment and makes the graph signal dynamic:
+`GraphCoverageNPO` makes the graph signal dynamic:
 
 - it tracks the per-token NLL margin to the frozen reference model for every
   forget example;
 - an exponential residual prioritizes examples that still lag in forgetting;
-- residuals are propagated to weighted graph neighbors;
-- Louvain communities receive balanced total optimization mass; and
+- residuals are propagated to weighted graph neighbors on the full graph;
+- globally normalized node weights are refreshed at a fixed optimizer-step
+  interval, rather than normalized independently inside every mini-batch; and
 - an adaptive retain coefficient increases when retain NLL exceeds a fixed
   budget over the reference model.
 
@@ -90,13 +91,24 @@ violation over all gradient-accumulation micro-batches. This keeps its update
 rate independent of `gradient_accumulation_steps`; the updated coefficient is
 used starting with the next optimizer step.
 
-The balanced configuration uses a `0.10` retain budget, caps the adaptive
-coefficient at `2.0`, and reacts faster to current forgetting residuals. It is
-intended to recover more forgetting than the initial high-utility run while
-retaining its utility advantage.
+The model-memory graph replaces TF-IDF similarity with the base model's own
+answer-token representations. For each forget example, the builder mean-pools
+the final hidden states over answer tokens, L2-normalizes the result, and builds
+a mutual 8-nearest-neighbor graph. Isolated nodes receive their strongest edge.
+This makes an edge describe similarity in the model's representation space
+rather than surface word overlap.
 
-The graph builder now stores deterministic Louvain community assignments. Old
-artifacts are rebuilt automatically by the new run script.
+Build the graph directly when needed:
+
+```bash
+python scripts/build_model_memory_graph.py \
+  --input-jsonl data/tofu_offline/forget10.json \
+  --model-path open-unlearning/tofu_Llama-3.2-1B-Instruct_full \
+  --output artifacts/graphs/forget10_model_memory.json
+```
+
+The run script builds this artifact automatically when it is missing. Set
+`GRAPH_TYPE=tfidf` to run a controlled ablation with the old graph.
 
 Run only the new treatment (the completed NPO run remains the single baseline):
 
@@ -115,7 +127,8 @@ Useful method overrides include:
 ```bash
 python src/train.py --config-name=unlearn.yaml \
   experiment=unlearn/tofu/graph_coverage_npo \
-  trainer.method_args.propagation_strength=0.2 \
+  trainer.method_args.propagation_strength=0.3 \
+  trainer.method_args.propagation_interval=10 \
   trainer.method_args.residual_temperature=0.5 \
   trainer.method_args.retain_budget=0.10
 ```
@@ -124,6 +137,6 @@ Set `TASK_NAME` when comparing variants so an existing result is not
 overwritten:
 
 ```bash
-TASK_NAME=GRAPH_COVERAGE_NPO_BALANCED_forget10_SEED0 \
+TASK_NAME=MODEL_MEMORY_GRAPH_NPO_forget10_SEED0 \
   bash scripts/run_graph_coverage_npo_tofu.sh
 ```

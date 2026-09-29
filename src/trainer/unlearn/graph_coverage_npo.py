@@ -37,10 +37,11 @@ class GraphCoverageNPO(GradDiff):
         residual_temperature=1.0,
         residual_ema_decay=0.9,
         propagation_strength=0.3,
+        propagation_interval=10,
         community_balance_power=1.0,
         weight_floor=0.5,
         weight_ceiling=2.0,
-        normalize_batch_weights=True,
+        normalize_global_weights=True,
         strict_index=True,
         adaptive_retain=True,
         retain_budget=0.05,
@@ -55,6 +56,7 @@ class GraphCoverageNPO(GradDiff):
             residual_temperature=residual_temperature,
             residual_ema_decay=residual_ema_decay,
             propagation_strength=propagation_strength,
+            propagation_interval=propagation_interval,
             community_balance_power=community_balance_power,
             weight_floor=weight_floor,
             weight_ceiling=weight_ceiling,
@@ -71,10 +73,11 @@ class GraphCoverageNPO(GradDiff):
         self.residual_temperature = residual_temperature
         self.residual_ema_decay = residual_ema_decay
         self.propagation_strength = propagation_strength
+        self.propagation_interval = int(propagation_interval)
         self.community_balance_power = community_balance_power
         self.weight_floor = weight_floor
         self.weight_ceiling = weight_ceiling
-        self.normalize_batch_weights = normalize_batch_weights
+        self.normalize_global_weights = normalize_global_weights
         self.strict_index = strict_index
         self.adaptive_retain = adaptive_retain
         self.retain_budget = retain_budget
@@ -93,12 +96,14 @@ class GraphCoverageNPO(GradDiff):
         self.community_sizes = Counter(self.communities.values())
         self.mean_community_size = self.num_nodes / max(1, len(self.community_sizes))
         self.residual_ema = torch.ones(self.num_nodes, dtype=torch.float32)
+        self.global_node_weights = torch.ones(self.num_nodes, dtype=torch.float32)
         self._last_batch_weights = None
         self._last_retain_violation = 0.0
         self._coverage_updates = 0
         self._optimizer_updates = 0
         self._retain_violation_sum = 0.0
         self._retain_violation_count = 0
+        self._microbatches_in_step = 0
 
         if self.ref_model is None:
             self.ref_model = self._prepare_ref_model(self.model)
@@ -116,6 +121,7 @@ class GraphCoverageNPO(GradDiff):
         residual_temperature,
         residual_ema_decay,
         propagation_strength,
+        propagation_interval,
         community_balance_power,
         weight_floor,
         weight_ceiling,
@@ -130,6 +136,8 @@ class GraphCoverageNPO(GradDiff):
             raise ValueError("residual_ema_decay must be in [0, 1)")
         if not 0.0 <= propagation_strength <= 1.0:
             raise ValueError("propagation_strength must be in [0, 1]")
+        if propagation_interval < 1:
+            raise ValueError("propagation_interval must be at least 1")
         if community_balance_power < 0:
             raise ValueError("community_balance_power must be non-negative")
         if not 0.0 < weight_floor <= weight_ceiling:
@@ -203,21 +211,19 @@ class GraphCoverageNPO(GradDiff):
             )
         return invalid
 
-    def _bounded_mean_one(self, values):
-        if self.normalize_batch_weights:
+    def _bounded_global_mean_one(self, values):
+        if self.normalize_global_weights:
             values = values / values.mean().clamp_min(torch.finfo(values.dtype).eps)
         for _ in range(3):
             values = values.clamp(self.weight_floor, self.weight_ceiling)
-            if self.normalize_batch_weights:
+            if self.normalize_global_weights:
                 values = values / values.mean().clamp_min(
                     torch.finfo(values.dtype).eps
                 )
         return values.clamp(self.weight_floor, self.weight_ceiling)
 
     @torch.no_grad()
-    def _dynamic_weights_for_batch(
-        self, indices, per_token_margins, device, dtype
-    ):
+    def _update_residuals(self, indices, per_token_margins):
         index_values = [int(index) for index in indices.detach().cpu().tolist()]
         self._validate_indices(index_values)
 
@@ -233,13 +239,12 @@ class GraphCoverageNPO(GradDiff):
                     self.residual_ema_decay * old
                     + (1.0 - self.residual_ema_decay) * residual
                 )
+        return index_values
 
+    @torch.no_grad()
+    def _refresh_global_node_weights(self):
         raw_weights = []
-        for index, residual in zip(index_values, residuals):
-            if not 0 <= index < self.num_nodes:
-                raw_weights.append(float(residual))
-                continue
-
+        for index in range(self.num_nodes):
             own_residual = float(self.residual_ema[index])
             neighbors = self.adjacency[index]
             if neighbors:
@@ -262,8 +267,22 @@ class GraphCoverageNPO(GradDiff):
             ) ** self.community_balance_power
             raw_weights.append(propagated * balance)
 
-        weights = torch.tensor(raw_weights, device=device, dtype=dtype)
-        weights = self._bounded_mean_one(weights)
+        weights = torch.tensor(raw_weights, dtype=torch.float32)
+        self.global_node_weights = self._bounded_global_mean_one(weights).cpu()
+        return self.global_node_weights
+
+    @torch.no_grad()
+    def _dynamic_weights_for_batch(
+        self, indices, per_token_margins, device, dtype
+    ):
+        index_values = self._update_residuals(indices, per_token_margins)
+        selected = [
+            float(self.global_node_weights[index])
+            if 0 <= index < self.num_nodes
+            else 1.0
+            for index in index_values
+        ]
+        weights = torch.tensor(selected, device=device, dtype=dtype)
         self._last_batch_weights = weights.detach().float().cpu()
         return weights
 
@@ -299,23 +318,26 @@ class GraphCoverageNPO(GradDiff):
                 )
             ),
         )
-        return self._retain_violation_count >= gradient_accumulation_steps
+        return self._microbatches_in_step >= gradient_accumulation_steps
 
     def _record_retain_violation(self, retain_loss, reference_retain_loss=None):
-        if not self.adaptive_retain:
-            return False
-
-        violation = self._retain_violation(retain_loss, reference_retain_loss)
-        self._retain_violation_sum += violation
-        self._retain_violation_count += 1
+        self._microbatches_in_step += 1
+        if self.adaptive_retain:
+            violation = self._retain_violation(retain_loss, reference_retain_loss)
+            self._retain_violation_sum += violation
+            self._retain_violation_count += 1
         if not self._is_optimizer_step_boundary():
             return False
 
-        mean_violation = self._retain_violation_sum / self._retain_violation_count
+        self._microbatches_in_step = 0
+        self._optimizer_updates += 1
+        if self.adaptive_retain:
+            mean_violation = self._retain_violation_sum / self._retain_violation_count
+            self._apply_alpha_update(mean_violation)
         self._retain_violation_sum = 0.0
         self._retain_violation_count = 0
-        self._optimizer_updates += 1
-        self._apply_alpha_update(mean_violation)
+        if self._optimizer_updates % self.propagation_interval == 0:
+            self._refresh_global_node_weights()
         return True
 
     def compute_loss(
@@ -379,13 +401,13 @@ class GraphCoverageNPO(GradDiff):
         ):
             logger.info(
                 "optimizer update=%d microbatches=%d "
-                "weights[min=%.4f mean=%.4f max=%.4f] "
+                "global_weights[min=%.4f mean=%.4f max=%.4f] "
                 "alpha=%.4f retain_violation=%.4f",
                 self._optimizer_updates,
                 self._coverage_updates,
-                float(weights.min()),
-                float(weights.mean()),
-                float(weights.max()),
+                float(self.global_node_weights.min()),
+                float(self.global_node_weights.mean()),
+                float(self.global_node_weights.max()),
                 self.current_alpha,
                 self._last_retain_violation,
             )

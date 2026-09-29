@@ -15,6 +15,7 @@ output*/
 wandb/
 data/
 !*/data/ 
+artifacts/graphs/*_model_memory.json
 evals/
 !*/evals/  
 # Byte-compiled / optimized / DLL files

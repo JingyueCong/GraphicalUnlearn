@@ -41,10 +41,12 @@ class GraphCoverageNPOTest(unittest.TestCase):
         trainer.residual_temperature = 1.0
         trainer.residual_ema_decay = 0.0
         trainer.propagation_strength = 0.0
+        trainer.propagation_interval = 1
         trainer.community_balance_power = 0.0
         trainer.weight_floor = 0.1
         trainer.weight_ceiling = 3.0
-        trainer.normalize_batch_weights = True
+        trainer.normalize_global_weights = True
+        trainer.global_node_weights = torch.ones(3)
         trainer.strict_index = True
         trainer._last_batch_weights = None
         trainer.diagnostic_interval = 0
@@ -52,6 +54,7 @@ class GraphCoverageNPOTest(unittest.TestCase):
         trainer._optimizer_updates = 0
         trainer._retain_violation_sum = 0.0
         trainer._retain_violation_count = 0
+        trainer._microbatches_in_step = 0
         trainer.args = SimpleNamespace(gradient_accumulation_steps=1)
         return trainer
 
@@ -73,6 +76,11 @@ class GraphCoverageNPOTest(unittest.TestCase):
 
     def test_dynamic_weights_focus_on_underforgotten_examples(self):
         trainer = self.make_bare_trainer()
+        trainer._update_residuals(
+            indices=torch.tensor([0, 1]),
+            per_token_margins=torch.tensor([0.0, 2.0]),
+        )
+        trainer._refresh_global_node_weights()
         weights = trainer._dynamic_weights_for_batch(
             indices=torch.tensor([0, 1]),
             per_token_margins=torch.tensor([0.0, 2.0]),
@@ -81,12 +89,16 @@ class GraphCoverageNPOTest(unittest.TestCase):
         )
 
         self.assertGreater(float(weights[0]), float(weights[1]))
-        torch.testing.assert_close(weights.mean(), torch.tensor(1.0))
+        torch.testing.assert_close(
+            trainer.global_node_weights.mean(), torch.tensor(1.0)
+        )
+        self.assertNotAlmostEqual(float(weights.mean()), 1.0)
 
     def test_graph_propagates_neighbor_residual(self):
         trainer = self.make_bare_trainer()
         trainer.propagation_strength = 1.0
         trainer.residual_ema = torch.tensor([1.0, 3.0, 1.0])
+        trainer._refresh_global_node_weights()
         weights = trainer._dynamic_weights_for_batch(
             indices=torch.tensor([0, 2]),
             per_token_margins=torch.tensor([0.0, 0.0]),
@@ -108,6 +120,9 @@ class GraphCoverageNPOTest(unittest.TestCase):
         trainer._optimizer_updates = 0
         trainer._retain_violation_sum = 0.0
         trainer._retain_violation_count = 0
+        trainer._microbatches_in_step = 0
+        trainer.propagation_interval = 10
+        trainer.global_node_weights = torch.ones(1)
         trainer.args = SimpleNamespace(gradient_accumulation_steps=4)
 
         for _ in range(3):
@@ -125,6 +140,23 @@ class GraphCoverageNPOTest(unittest.TestCase):
         self.assertAlmostEqual(trainer._last_retain_violation, 0.95, places=6)
         self.assertEqual(trainer._optimizer_updates, 1)
         self.assertEqual(trainer._retain_violation_count, 0)
+
+    def test_global_weights_refresh_without_adaptive_retain(self):
+        trainer = self.make_bare_trainer()
+        trainer.adaptive_retain = False
+        trainer.residual_ema = torch.tensor([2.0, 1.0, 1.0])
+
+        updated = trainer._record_retain_violation(torch.tensor(1.0))
+
+        self.assertTrue(updated)
+        self.assertEqual(trainer._optimizer_updates, 1)
+        self.assertGreater(
+            float(trainer.global_node_weights[0]),
+            float(trainer.global_node_weights[1]),
+        )
+        torch.testing.assert_close(
+            trainer.global_node_weights.mean(), torch.tensor(1.0)
+        )
 
     def test_objective_runs_backward(self):
         torch.manual_seed(0)
@@ -149,6 +181,7 @@ class GraphCoverageNPOTest(unittest.TestCase):
         trainer._optimizer_updates = 0
         trainer._retain_violation_sum = 0.0
         trainer._retain_violation_count = 0
+        trainer._microbatches_in_step = 0
         trainer.retain_loss_type = "NLL"
         trainer.ref_model = reference
 

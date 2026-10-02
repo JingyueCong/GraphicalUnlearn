@@ -123,6 +123,23 @@ python scripts/randomize_forget_graph.py \
 Running the same trainer with this artifact separates the effect of meaningful
 model-memory neighborhoods from generic graph smoothing.
 
+Build a gradient/influence graph from deterministic random projections of each
+example's answer-NLL gradient with respect to the final model normalization
+parameters:
+
+```bash
+python scripts/build_gradient_memory_graph.py \
+  --input-jsonl data/tofu_offline/forget10.json \
+  --model-path open-unlearning/tofu_Llama-3.2-1B-Instruct_full \
+  --parameter-pattern model.norm \
+  --projection-dim 256 \
+  --output artifacts/graphs/forget10_gradient_memory.json
+```
+
+Only the graph artifact contains forget-set-derived information and remains
+ignored by Git. The builder and its deterministic projection settings are
+versioned for reproducibility.
+
 Run only the new treatment (the completed NPO run remains the single baseline):
 
 ```bash

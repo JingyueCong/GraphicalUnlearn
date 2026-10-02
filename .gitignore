@@ -16,6 +16,7 @@ wandb/
 data/
 !*/data/ 
 artifacts/graphs/*_model_memory.json
+artifacts/graphs/*_gradient_memory.json
 artifacts/graphs/*_randomized.json
 evals/
 !*/evals/  

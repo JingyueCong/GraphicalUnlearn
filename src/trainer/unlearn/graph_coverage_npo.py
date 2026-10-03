@@ -25,9 +25,9 @@ class GraphCoverageNPO(GradDiff):
     neighbors receive more optimization power; already-forgotten examples fade
     out automatically.
 
-    The retain coefficient is a lightweight Lagrange multiplier.  It can only
-    increase above the configured ``alpha`` when retain NLL drifts beyond the
-    reference model by more than ``retain_budget``.
+    The retain coefficient is a lightweight Lagrange multiplier. Its controller
+    tracks an EMA of retain-budget violations and can raise or lower the
+    coefficient as the model moves outside or back inside the utility budget.
     """
 
     def __init__(
@@ -46,6 +46,10 @@ class GraphCoverageNPO(GradDiff):
         adaptive_retain=True,
         retain_budget=0.05,
         adaptive_alpha_lr=0.05,
+        alpha_update_rule="additive",
+        retain_violation_ema_decay=0.9,
+        retain_violation_clip=1.0,
+        retain_violation_deadband=0.0,
         alpha_min=None,
         alpha_max=4.0,
         diagnostic_interval=10,
@@ -62,6 +66,10 @@ class GraphCoverageNPO(GradDiff):
             weight_ceiling=weight_ceiling,
             retain_budget=retain_budget,
             adaptive_alpha_lr=adaptive_alpha_lr,
+            alpha_update_rule=alpha_update_rule,
+            retain_violation_ema_decay=retain_violation_ema_decay,
+            retain_violation_clip=retain_violation_clip,
+            retain_violation_deadband=retain_violation_deadband,
             alpha_max=alpha_max,
             diagnostic_interval=diagnostic_interval,
         )
@@ -82,6 +90,10 @@ class GraphCoverageNPO(GradDiff):
         self.adaptive_retain = adaptive_retain
         self.retain_budget = retain_budget
         self.adaptive_alpha_lr = adaptive_alpha_lr
+        self.alpha_update_rule = alpha_update_rule
+        self.retain_violation_ema_decay = retain_violation_ema_decay
+        self.retain_violation_clip = retain_violation_clip
+        self.retain_violation_deadband = retain_violation_deadband
         self.base_alpha = float(self.alpha)
         self.alpha_min = self.base_alpha if alpha_min is None else float(alpha_min)
         self.alpha_max = float(alpha_max)
@@ -99,6 +111,8 @@ class GraphCoverageNPO(GradDiff):
         self.global_node_weights = torch.ones(self.num_nodes, dtype=torch.float32)
         self._last_batch_weights = None
         self._last_retain_violation = 0.0
+        self._retain_violation_ema = 0.0
+        self._retain_violation_ema_initialized = False
         self._coverage_updates = 0
         self._optimizer_updates = 0
         self._retain_violation_sum = 0.0
@@ -127,6 +141,10 @@ class GraphCoverageNPO(GradDiff):
         weight_ceiling,
         retain_budget,
         adaptive_alpha_lr,
+        alpha_update_rule,
+        retain_violation_ema_decay,
+        retain_violation_clip,
+        retain_violation_deadband,
         alpha_max,
         diagnostic_interval,
     ):
@@ -146,6 +164,20 @@ class GraphCoverageNPO(GradDiff):
             raise ValueError("retain_budget must be non-negative")
         if adaptive_alpha_lr < 0:
             raise ValueError("adaptive_alpha_lr must be non-negative")
+        if alpha_update_rule not in {"additive", "multiplicative"}:
+            raise ValueError(
+                "alpha_update_rule must be 'additive' or 'multiplicative'"
+            )
+        if not 0.0 <= retain_violation_ema_decay < 1.0:
+            raise ValueError("retain_violation_ema_decay must be in [0, 1)")
+        if retain_violation_clip <= 0:
+            raise ValueError("retain_violation_clip must be positive")
+        if retain_violation_deadband < 0:
+            raise ValueError("retain_violation_deadband must be non-negative")
+        if retain_violation_deadband > retain_violation_clip:
+            raise ValueError(
+                "retain_violation_deadband must not exceed retain_violation_clip"
+            )
         if alpha_max < 0:
             raise ValueError("alpha_max must be non-negative")
         if diagnostic_interval < 0:
@@ -295,12 +327,29 @@ class GraphCoverageNPO(GradDiff):
 
     def _apply_alpha_update(self, violation):
         self._last_retain_violation = violation
+        if not self._retain_violation_ema_initialized:
+            self._retain_violation_ema = violation
+            self._retain_violation_ema_initialized = True
+        else:
+            decay = self.retain_violation_ema_decay
+            self._retain_violation_ema = (
+                decay * self._retain_violation_ema + (1.0 - decay) * violation
+            )
         if not self.adaptive_retain:
             return self.current_alpha
-        bounded_violation = max(-1.0, min(1.0, violation))
-        updated = self.current_alpha * math.exp(
-            self.adaptive_alpha_lr * bounded_violation
+        control_violation = self._retain_violation_ema
+        if abs(control_violation) <= self.retain_violation_deadband:
+            control_violation = 0.0
+        control_violation = max(
+            -self.retain_violation_clip,
+            min(self.retain_violation_clip, control_violation),
         )
+        if self.alpha_update_rule == "additive":
+            updated = self.current_alpha + self.adaptive_alpha_lr * control_violation
+        else:
+            updated = self.current_alpha * math.exp(
+                self.adaptive_alpha_lr * control_violation
+            )
         self.current_alpha = min(self.alpha_max, max(self.alpha_min, updated))
         return self.current_alpha
 
@@ -402,7 +451,7 @@ class GraphCoverageNPO(GradDiff):
             logger.info(
                 "optimizer update=%d microbatches=%d "
                 "global_weights[min=%.4f mean=%.4f max=%.4f] "
-                "alpha=%.4f retain_violation=%.4f",
+                "alpha=%.4f retain_violation=%.4f violation_ema=%.4f",
                 self._optimizer_updates,
                 self._coverage_updates,
                 float(self.global_node_weights.min()),
@@ -410,6 +459,7 @@ class GraphCoverageNPO(GradDiff):
                 float(self.global_node_weights.max()),
                 self.current_alpha,
                 self._last_retain_violation,
+                self._retain_violation_ema,
             )
 
         loss = self.gamma * forget_loss + alpha * retain_loss

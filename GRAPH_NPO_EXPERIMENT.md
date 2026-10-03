@@ -83,13 +83,18 @@ examples were forgotten, but did not improve the final trade-off over NPO.
 - residuals are propagated to weighted graph neighbors on the full graph;
 - globally normalized node weights are refreshed at a fixed optimizer-step
   interval, rather than normalized independently inside every mini-batch; and
-- an adaptive retain coefficient increases when retain NLL exceeds a fixed
-  budget over the reference model.
+- an adaptive retain coefficient responds when retain NLL moves outside or
+  back inside a fixed budget around the reference model.
 
 The adaptive coefficient is updated once per optimizer step from the mean
 violation over all gradient-accumulation micro-batches. This keeps its update
 rate independent of `gradient_accumulation_steps`; the updated coefficient is
-used starting with the next optimizer step.
+used starting with the next optimizer step. The default controller smooths the
+violation with an exponential moving average and applies a clipped additive
+update. Its lower bound is zero, so retain pressure can decrease again after
+utility recovers instead of monotonically saturating at `alpha_max`. The old
+multiplicative rule remains available through
+`trainer.method_args.alpha_update_rule=multiplicative`.
 
 The model-memory graph replaces TF-IDF similarity with the base model's own
 answer-token representations. For each forget example, the builder mean-pools
@@ -160,7 +165,9 @@ python src/train.py --config-name=unlearn.yaml \
   trainer.method_args.propagation_strength=0.3 \
   trainer.method_args.propagation_interval=10 \
   trainer.method_args.residual_temperature=0.5 \
-  trainer.method_args.retain_budget=0.10
+  trainer.method_args.retain_budget=0.10 \
+  trainer.method_args.adaptive_alpha_lr=0.02 \
+  trainer.method_args.retain_violation_ema_decay=0.9
 ```
 
 Set `TASK_NAME` when comparing variants so an existing result is not

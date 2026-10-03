@@ -55,6 +55,12 @@ class GraphCoverageNPOTest(unittest.TestCase):
         trainer._retain_violation_sum = 0.0
         trainer._retain_violation_count = 0
         trainer._microbatches_in_step = 0
+        trainer.alpha_update_rule = "additive"
+        trainer.retain_violation_ema_decay = 0.0
+        trainer.retain_violation_clip = 1.0
+        trainer.retain_violation_deadband = 0.0
+        trainer._retain_violation_ema = 0.0
+        trainer._retain_violation_ema_initialized = False
         trainer.args = SimpleNamespace(gradient_accumulation_steps=1)
         return trainer
 
@@ -114,9 +120,15 @@ class GraphCoverageNPOTest(unittest.TestCase):
         trainer.retain_budget = 0.05
         trainer.adaptive_alpha_lr = 0.5
         trainer.current_alpha = 1.0
-        trainer.alpha_min = 1.0
+        trainer.alpha_min = 0.0
         trainer.alpha_max = 4.0
+        trainer.alpha_update_rule = "additive"
+        trainer.retain_violation_ema_decay = 0.0
+        trainer.retain_violation_clip = 1.0
+        trainer.retain_violation_deadband = 0.0
         trainer._last_retain_violation = 0.0
+        trainer._retain_violation_ema = 0.0
+        trainer._retain_violation_ema_initialized = False
         trainer._optimizer_updates = 0
         trainer._retain_violation_sum = 0.0
         trainer._retain_violation_count = 0
@@ -140,6 +152,36 @@ class GraphCoverageNPOTest(unittest.TestCase):
         self.assertAlmostEqual(trainer._last_retain_violation, 0.95, places=6)
         self.assertEqual(trainer._optimizer_updates, 1)
         self.assertEqual(trainer._retain_violation_count, 0)
+
+    def test_additive_controller_can_lower_alpha_inside_budget(self):
+        trainer = self.make_bare_trainer()
+        trainer.adaptive_retain = True
+        trainer.adaptive_alpha_lr = 0.2
+        trainer.current_alpha = 1.0
+        trainer.alpha_min = 0.0
+        trainer.alpha_max = 2.0
+
+        updated = trainer._apply_alpha_update(-0.5)
+
+        self.assertAlmostEqual(updated, 0.9)
+        self.assertAlmostEqual(trainer._retain_violation_ema, -0.5)
+
+    def test_violation_ema_damps_opposite_consecutive_updates(self):
+        trainer = self.make_bare_trainer()
+        trainer.adaptive_retain = True
+        trainer.adaptive_alpha_lr = 0.1
+        trainer.retain_violation_ema_decay = 0.5
+        trainer.current_alpha = 1.0
+        trainer.alpha_min = 0.0
+        trainer.alpha_max = 2.0
+
+        trainer._apply_alpha_update(0.5)
+        after_positive = trainer.current_alpha
+        trainer._apply_alpha_update(-0.5)
+
+        self.assertAlmostEqual(after_positive, 1.05)
+        self.assertAlmostEqual(trainer._retain_violation_ema, 0.0)
+        self.assertAlmostEqual(trainer.current_alpha, after_positive)
 
     def test_global_weights_refresh_without_adaptive_retain(self):
         trainer = self.make_bare_trainer()
@@ -172,12 +214,18 @@ class GraphCoverageNPOTest(unittest.TestCase):
         trainer.alpha = 1.0
         trainer.base_alpha = 1.0
         trainer.current_alpha = 1.0
-        trainer.alpha_min = 1.0
+        trainer.alpha_min = 0.0
         trainer.alpha_max = 4.0
         trainer.adaptive_retain = True
         trainer.retain_budget = 0.05
         trainer.adaptive_alpha_lr = 0.05
+        trainer.alpha_update_rule = "additive"
+        trainer.retain_violation_ema_decay = 0.9
+        trainer.retain_violation_clip = 1.0
+        trainer.retain_violation_deadband = 0.0
         trainer._last_retain_violation = 0.0
+        trainer._retain_violation_ema = 0.0
+        trainer._retain_violation_ema_initialized = False
         trainer._optimizer_updates = 0
         trainer._retain_violation_sum = 0.0
         trainer._retain_violation_count = 0

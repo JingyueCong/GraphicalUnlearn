@@ -19,7 +19,11 @@ method_args:
   strict_index: true
   adaptive_retain: true
   retain_budget: 0.10
-  adaptive_alpha_lr: 0.05
-  alpha_min: 1.0
+  adaptive_alpha_lr: 0.02
+  alpha_update_rule: additive
+  retain_violation_ema_decay: 0.9
+  retain_violation_clip: 1.0
+  retain_violation_deadband: 0.01
+  alpha_min: 0.0
   alpha_max: 2.0
   diagnostic_interval: 10

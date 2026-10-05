@@ -177,3 +177,42 @@ overwritten:
 TASK_NAME=MODEL_MEMORY_GRAPH_NPO_forget10_SEED0 \
   bash scripts/run_graph_coverage_npo_tofu.sh
 ```
+
+## Signed gradient-conflict graph
+
+The signed-conflict treatment tests a stronger use of graph structure than
+neighbor smoothing. It sketches answer-NLL gradients from every transformer
+LayerNorm, then creates two edge types:
+
+- a positive edge connects examples whose forgetting gradients cooperate;
+- a negative edge connects examples whose forgetting gradients conflict.
+
+During training, positive neighbors smooth forgetting demand in log-residual
+space. Negative neighbors compete for update budget: the endpoint with the
+larger current residual is amplified and the other is suppressed. This is a
+deterministic allocation approximation to per-example gradient surgery that
+does not require retaining a full backward graph for every example in a batch.
+
+Build the private graph artifact:
+
+```bash
+python scripts/build_signed_gradient_graph.py \
+  --input-jsonl data/tofu_offline/forget10.json \
+  --model-path open-unlearning/tofu_Llama-3.2-1B-Instruct_full \
+  --projection-dim 512 \
+  --positive-top-k 4 \
+  --negative-top-k 4 \
+  --output artifacts/graphs/forget10_signed_gradient_conflict.json
+```
+
+Then run the treatment:
+
+```bash
+TASK_NAME=SIGNED_GRADIENT_CONFLICT_NPO_forget10_SEED0 \
+  bash scripts/run_signed_gradient_conflict_npo_tofu.sh
+```
+
+Its required controls are the same trainer with `conflict_strength=0`, a
+degree-preserving sign shuffle, and ordinary NPO. A signed-graph claim requires
+the real graph to beat all controls across multiple seeds; a single TOFU run is
+only a feasibility test.

@@ -1,0 +1,10 @@
+defaults:
+  - GraphCoverageNPO
+
+handler: SignedGradientConflictNPO
+method_args:
+  propagation_strength: 0.0
+  cooperative_strength: 0.25
+  conflict_strength: 0.7
+  conflict_temperature: 0.5
+  require_negative_edges: true

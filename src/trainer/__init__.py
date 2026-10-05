@@ -17,6 +17,7 @@ from trainer.unlearn.wga import WGA
 from trainer.unlearn.pdu import PDU
 from trainer.unlearn.graph_npo import GraphNPO
 from trainer.unlearn.graph_coverage_npo import GraphCoverageNPO
+from trainer.unlearn.signed_gradient_conflict_npo import SignedGradientConflictNPO
 
 
 import logging
@@ -103,3 +104,4 @@ _register_trainer(WGA)
 _register_trainer(PDU)
 _register_trainer(GraphNPO)
 _register_trainer(GraphCoverageNPO)
+_register_trainer(SignedGradientConflictNPO)

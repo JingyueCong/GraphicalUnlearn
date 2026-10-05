@@ -216,3 +216,38 @@ Its required controls are the same trainer with `conflict_strength=0`, a
 degree-preserving sign shuffle, and ordinary NPO. A signed-graph claim requires
 the real graph to beat all controls across multiple seeds; a single TOFU run is
 only a feasibility test.
+
+## Internal KV causal probe
+
+Before training another graph variant, test whether an MLP key/value graph
+predicts the collateral effect of a memory edit. The probe extracts the
+answer-token input and output of a selected `mlp.down_proj`, temporarily
+applies a rank-one value-erasure hook for each sampled forget example, and
+measures the exact NLL change on sampled forget and retain examples. It does
+not modify or save the model.
+
+```bash
+python scripts/probe_kv_causal_graph.py \
+  --forget-jsonl data/tofu_offline/forget10.json \
+  --retain-jsonl data/tofu_offline/retain90.json \
+  --model-path open-unlearning/tofu_Llama-3.2-1B-Instruct_full \
+  --layer 3 --num-sources 32 \
+  --num-forget-targets 128 --num-retain-targets 128 \
+  --intervention-strength 0.5 \
+  --output artifacts/kv_probe/forget10_layer3_seed0.json
+```
+
+Compare key cosine, value cosine, their product, and final-hidden-state cosine
+by per-source Spearman correlation and precision at the largest eight causal
+effects. Only layers that beat final-hidden and random retrieval consistently
+should be used to build the training graph.
+
+Build the selected full graph as follows:
+
+```bash
+python scripts/build_kv_memory_graph.py \
+  --input-jsonl data/tofu_offline/forget10.json \
+  --model-path open-unlearning/tofu_Llama-3.2-1B-Instruct_full \
+  --layer 3 \
+  --output artifacts/graphs/forget10_mlp_key_layer3.json
+```

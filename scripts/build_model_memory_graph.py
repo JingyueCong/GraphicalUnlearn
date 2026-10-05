@@ -172,21 +172,28 @@ def cosine(left, right):
     return sum(a * b for a, b in zip(left, right))
 
 
-def build_mutual_knn_graph(vectors, top_k=8, min_similarity=0.0):
+def build_mutual_knn_graph(
+    vectors, top_k=8, min_similarity=0.0, absolute_similarity=False
+):
     """Build a connected mutual-kNN graph with conservative backfill edges."""
+    import numpy as np
+
     size = len(vectors)
     if size < 2:
         return [[] for _ in range(size)], []
     top_k = max(1, min(top_k, size - 1))
-    similarities = [[-1.0] * size for _ in range(size)]
+    matrix = np.asarray(vectors, dtype=np.float32)
+    similarities = matrix @ matrix.T
+    if absolute_similarity:
+        similarities = np.abs(similarities)
+    np.fill_diagonal(similarities, -1.0)
     directed = []
     for left in range(size):
         candidates = []
         for right in range(size):
             if left == right:
                 continue
-            value = cosine(vectors[left], vectors[right])
-            similarities[left][right] = value
+            value = float(similarities[left, right])
             if value >= min_similarity:
                 candidates.append((right, value))
         directed.append(
@@ -211,11 +218,11 @@ def build_mutual_knn_graph(vectors, top_k=8, min_similarity=0.0):
             continue
         right = max(
             (node for node in range(size) if node != left),
-            key=lambda node: (similarities[left][node], -node),
+            key=lambda node: (float(similarities[left, node]), -node),
         )
         edge = (min(left, right), max(left, right))
         if edge not in edge_weights:
-            edge_weights[edge] = max(float(similarities[left][right]), 1e-6)
+            edge_weights[edge] = max(float(similarities[left, right]), 1e-6)
             degree[left] += 1
             degree[right] += 1
 
@@ -238,7 +245,7 @@ def build_mutual_knn_graph(vectors, top_k=8, min_similarity=0.0):
         union(left, right)
     while len({find(node) for node in range(size)}) > 1:
         cross_component = (
-            (similarities[left][right], left, right)
+            (float(similarities[left, right]), left, right)
             for left in range(size)
             for right in range(left + 1, size)
             if find(left) != find(right)

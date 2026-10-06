@@ -1,4 +1,5 @@
 import importlib.util
+from types import SimpleNamespace
 import unittest
 from pathlib import Path
 
@@ -12,6 +13,34 @@ SPEC.loader.exec_module(EDIT)
 
 
 class GraphKVEditTest(unittest.TestCase):
+    def test_prompt_tokens_include_requested_system_prompt(self):
+        class Tokenizer:
+            def __init__(self):
+                self.chat = None
+
+            def apply_chat_template(self, chat, **kwargs):
+                self.chat = chat
+                self.kwargs = kwargs
+                return [1, 2, 3, 4]
+
+        tokenizer = Tokenizer()
+        args = SimpleNamespace(
+            question_key="question", date_string="10 Apr 2025", max_length=3
+        )
+
+        token_ids = EDIT._prompt_token_ids(
+            tokenizer,
+            {"question": "Who is the author?"},
+            args,
+            "Do not disclose the answer.",
+        )
+
+        self.assertEqual(token_ids, [1, 2, 3])
+        self.assertEqual(tokenizer.chat[0]["role"], "system")
+        self.assertEqual(tokenizer.chat[0]["content"], "Do not disclose the answer.")
+        self.assertEqual(tokenizer.chat[1]["content"], "Who is the author?")
+        self.assertTrue(tokenizer.kwargs["add_generation_prompt"])
+
     def test_graph_columns_are_weighted_differences(self):
         keys = torch.tensor([[1.0, 0.0], [0.0, 1.0]])
 
@@ -36,7 +65,7 @@ class GraphKVEditTest(unittest.TestCase):
 
         _delta, diagnostics = EDIT.solve_edit(
             forget_keys=forget_keys,
-            forget_values=forget_values,
+            desired_deltas=-forget_values,
             retain_keys=retain_keys,
             edges=[],
             strength=0.2,

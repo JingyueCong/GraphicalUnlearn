@@ -26,6 +26,19 @@ def parse_args():
     parser.add_argument("--output-dir", type=Path, required=True)
     parser.add_argument("--layer", type=int, default=3)
     parser.add_argument("--strength", type=float, default=0.1)
+    parser.add_argument(
+        "--edit-target",
+        choices=("erase_answer_value", "refusal_prompt_value"),
+        default="erase_answer_value",
+    )
+    parser.add_argument(
+        "--refusal-system-prompt",
+        default=(
+            "You are a helpful assistant. You do not know biographical "
+            "information about the person in the user's question. Say that "
+            "you do not know and do not provide factual details."
+        ),
+    )
     parser.add_argument("--retain-weight", type=float, default=1.0)
     parser.add_argument("--graph-gamma", type=float, default=1.0)
     parser.add_argument("--ridge-scale", type=float, default=1e-3)
@@ -112,6 +125,72 @@ def extract_kv(model, tokenizer, records, module, args, include_values):
     return torch.cat(keys), torch.cat(values) if values else None
 
 
+def _prompt_token_ids(tokenizer, record, args, system_prompt):
+    if args.question_key not in record:
+        raise KeyError(f"Record lacks '{args.question_key}'")
+    chat = []
+    if system_prompt:
+        chat.append({"role": "system", "content": system_prompt})
+    chat.append({"role": "user", "content": str(record[args.question_key])})
+    date_info = {"date_string": args.date_string} if args.date_string else {}
+    input_ids = tokenizer.apply_chat_template(
+        chat,
+        tokenize=True,
+        add_generation_prompt=True,
+        **date_info,
+    )[: args.max_length]
+    if not input_ids:
+        raise ValueError("Prompt tokenization produced an empty sequence")
+    return input_ids
+
+
+def extract_prompt_kv(model, tokenizer, records, module, args, system_prompt):
+    """Extract the last pre-generation MLP key/value for every question."""
+    import torch
+    from torch.nn.utils.rnn import pad_sequence
+
+    tokenized = [
+        _prompt_token_ids(tokenizer, record, args, system_prompt) for record in records
+    ]
+    captured = {}
+
+    def capture(_module, inputs, output):
+        captured["key"] = inputs[0].detach()
+        captured["value"] = output.detach()
+
+    keys, values = [], []
+    handle = module.register_forward_hook(capture)
+    try:
+        with torch.inference_mode():
+            for start in range(0, len(tokenized), args.batch_size):
+                batch = tokenized[start : start + args.batch_size]
+                lengths = torch.tensor(
+                    [len(item) for item in batch], device=args.device, dtype=torch.long
+                )
+                input_ids = pad_sequence(
+                    [torch.tensor(item) for item in batch],
+                    batch_first=True,
+                    padding_value=tokenizer.pad_token_id,
+                ).to(args.device)
+                attention_mask = pad_sequence(
+                    [torch.ones(len(item), dtype=torch.long) for item in batch],
+                    batch_first=True,
+                    padding_value=0,
+                ).to(args.device)
+                model(
+                    input_ids=input_ids,
+                    attention_mask=attention_mask,
+                    use_cache=False,
+                )
+                rows = torch.arange(len(batch), device=args.device)
+                positions = lengths - 1
+                keys.append(captured["key"][rows, positions].float().cpu())
+                values.append(captured["value"][rows, positions].float().cpu())
+    finally:
+        handle.remove()
+    return torch.cat(keys), torch.cat(values)
+
+
 def load_graph_edges(path, num_nodes):
     if path is None:
         return []
@@ -163,7 +242,7 @@ def truncated_product(left, right, rank):
 
 def solve_edit(
     forget_keys,
-    forget_values,
+    desired_deltas,
     retain_keys,
     edges,
     strength,
@@ -177,7 +256,7 @@ def solve_edit(
     import torch
 
     forget_keys = forget_keys.to(device=device, dtype=torch.float32)
-    forget_values = forget_values.to(device=device, dtype=torch.float32)
+    desired_deltas = desired_deltas.to(device=device, dtype=torch.float32)
     retain_keys = retain_keys.to(device=device, dtype=torch.float32)
     forget_norms = forget_keys.norm(dim=1).clamp_min(1e-6)
     retain_norms = retain_keys.norm(dim=1).clamp_min(1e-6)
@@ -193,7 +272,7 @@ def solve_edit(
         ],
         dim=1,
     )
-    target = -strength * (forget_values / forget_norms.unsqueeze(1)).T
+    target = strength * (desired_deltas / forget_norms.unsqueeze(1)).T
     gram = design.T @ design
     ridge = ridge_scale * gram.diagonal().mean().clamp_min(1e-12)
     gram.diagonal().add_(ridge)
@@ -204,7 +283,7 @@ def solve_edit(
     delta, singular, explained = truncated_product(target, right, rank)
 
     achieved_forget = (delta @ forget_keys.T).T
-    desired_forget = -strength * forget_values
+    desired_forget = strength * desired_deltas
     achieved_retain = (delta @ retain_keys.T).T
     fit_error = (achieved_forget - desired_forget).norm() / desired_forget.norm().clamp_min(1e-30)
     retain_response = achieved_retain.norm(dim=1)
@@ -259,21 +338,49 @@ def main():
     retain_indices = select_indices(
         len(retain_records), args.num_retain_anchors, args.seed
     )
-    forget_keys, forget_values = extract_kv(
-        model, tokenizer, forget_records, module, args, include_values=True
-    )
-    retain_keys, _ = extract_kv(
-        model,
-        tokenizer,
-        [retain_records[index] for index in retain_indices],
-        module,
-        args,
-        include_values=False,
-    )
+    if args.edit_target == "erase_answer_value":
+        forget_keys, forget_values = extract_kv(
+            model, tokenizer, forget_records, module, args, include_values=True
+        )
+        desired_deltas = -forget_values
+        retain_keys, _ = extract_kv(
+            model,
+            tokenizer,
+            [retain_records[index] for index in retain_indices],
+            module,
+            args,
+            include_values=False,
+        )
+    else:
+        forget_keys, original_values = extract_prompt_kv(
+            model,
+            tokenizer,
+            forget_records,
+            module,
+            args,
+            system_prompt=args.system_prompt,
+        )
+        _, refusal_values = extract_prompt_kv(
+            model,
+            tokenizer,
+            forget_records,
+            module,
+            args,
+            system_prompt=args.refusal_system_prompt,
+        )
+        desired_deltas = refusal_values - original_values
+        retain_keys, _ = extract_prompt_kv(
+            model,
+            tokenizer,
+            [retain_records[index] for index in retain_indices],
+            module,
+            args,
+            system_prompt=args.system_prompt,
+        )
     edges = load_graph_edges(args.graph, len(forget_records))
     delta, diagnostics = solve_edit(
         forget_keys=forget_keys,
-        forget_values=forget_values,
+        desired_deltas=desired_deltas,
         retain_keys=retain_keys,
         edges=edges,
         strength=args.strength,
@@ -290,7 +397,7 @@ def main():
     model.save_pretrained(args.output_dir, safe_serialization=True)
     tokenizer.save_pretrained(args.output_dir)
     metadata = {
-        "method": "graph_constrained_low_rank_kv_value_erasure",
+        "method": "graph_constrained_low_rank_kv_edit",
         "model_path": args.model_path,
         "forget_jsonl": str(args.forget_jsonl),
         "retain_jsonl": str(args.retain_jsonl),
@@ -298,6 +405,12 @@ def main():
         "layer": args.layer,
         "module": f"model.layers.{args.layer}.mlp.down_proj",
         "strength": args.strength,
+        "edit_target": args.edit_target,
+        "refusal_system_prompt": (
+            args.refusal_system_prompt
+            if args.edit_target == "refusal_prompt_value"
+            else None
+        ),
         "retain_weight": args.retain_weight,
         "graph_gamma": args.graph_gamma,
         "ridge_scale": args.ridge_scale,

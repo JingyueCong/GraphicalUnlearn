@@ -279,3 +279,10 @@ The mandatory ablation uses the same command and anchors with
 `--graph-gamma 0`. Compare graph and no-graph at the same edit strength, and
 also compare interpolated utility at matched forget probability. Strength is a
 development hyperparameter; do not select it on the final test split.
+
+An experimental alternative maps the last pre-generation prompt key toward
+the value induced by a refusal system prompt instead of erasing answer-token
+values. Enable it with `--edit-target refusal_prompt_value`; the exact refusal
+instruction can be changed with `--refusal-system-prompt`. This target should
+be treated as an ablation: matching a local prompt value does not guarantee
+that the generated answer will follow the refusal instruction.

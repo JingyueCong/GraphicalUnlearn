@@ -251,3 +251,31 @@ python scripts/build_kv_memory_graph.py \
   --layer 3 \
   --output artifacts/graphs/forget10_mlp_key_layer3.json
 ```
+
+## Graph-constrained low-rank KV edit
+
+The causal probe motivates using the graph in parameter space rather than as
+an NPO example-weighting heuristic. The direct editor solves a ridge-regression
+update to one MLP `down_proj`. Forget keys are mapped toward the negative of
+their current values, sampled retain keys are zero-response anchors, and every
+graph edge adds a Laplacian column that penalizes different update responses
+for neighboring keys. The dense solution is truncated to the requested rank
+before being applied.
+
+```bash
+python scripts/apply_graph_kv_edit.py \
+  --forget-jsonl data/tofu_offline/forget10.json \
+  --retain-jsonl data/tofu_offline/retain90.json \
+  --graph artifacts/graphs/forget10_mlp_key_layer3.json \
+  --model-path open-unlearning/tofu_Llama-3.2-1B-Instruct_full \
+  --output-dir saves/unlearn/KV_DIRECT_GRAPH_L3_S080_G1_R64 \
+  --layer 3 --strength 0.8 \
+  --retain-weight 1.0 --graph-gamma 1.0 \
+  --ridge-scale 1e-3 --rank 64 \
+  --num-retain-anchors 400
+```
+
+The mandatory ablation uses the same command and anchors with
+`--graph-gamma 0`. Compare graph and no-graph at the same edit strength, and
+also compare interpolated utility at matched forget probability. Strength is a
+development hyperparameter; do not select it on the final test split.

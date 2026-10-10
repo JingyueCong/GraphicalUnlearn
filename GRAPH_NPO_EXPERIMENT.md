@@ -286,3 +286,11 @@ values. Enable it with `--edit-target refusal_prompt_value`; the exact refusal
 instruction can be changed with `--refusal-system-prompt`. This target should
 be treated as an ablation: matching a local prompt value does not guarantee
 that the generated answer will follow the refusal instruction.
+
+A stronger answer-side alternative uses
+`--edit-target counterfactual_refusal_value`. It keeps each forget question
+fixed, replaces its answer with a shared refusal string, and maps the factual
+answer key toward the paired difference between refusal and factual values.
+Override the default refusal with `--refusal-answer`. Screen this target first
+with `--graph-gamma 0`; only add the graph after it improves the erase target
+at matched forget probability.

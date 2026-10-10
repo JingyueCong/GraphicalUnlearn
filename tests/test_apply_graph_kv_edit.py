@@ -13,6 +13,15 @@ SPEC.loader.exec_module(EDIT)
 
 
 class GraphKVEditTest(unittest.TestCase):
+    def test_replace_answers_preserves_original_records(self):
+        records = [{"question": "Q", "answer": "fact", "id": 7}]
+
+        counterfactual = EDIT.replace_answers(records, "answer", "I don't know.")
+
+        self.assertEqual(counterfactual[0]["answer"], "I don't know.")
+        self.assertEqual(counterfactual[0]["id"], 7)
+        self.assertEqual(records[0]["answer"], "fact")
+
     def test_prompt_tokens_include_requested_system_prompt(self):
         class Tokenizer:
             def __init__(self):

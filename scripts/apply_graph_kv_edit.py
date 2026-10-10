@@ -28,8 +28,16 @@ def parse_args():
     parser.add_argument("--strength", type=float, default=0.1)
     parser.add_argument(
         "--edit-target",
-        choices=("erase_answer_value", "refusal_prompt_value"),
+        choices=(
+            "erase_answer_value",
+            "counterfactual_refusal_value",
+            "refusal_prompt_value",
+        ),
         default="erase_answer_value",
+    )
+    parser.add_argument(
+        "--refusal-answer",
+        default="I don't know the answer to that question.",
     )
     parser.add_argument(
         "--refusal-system-prompt",
@@ -60,6 +68,18 @@ def select_indices(size, count, seed):
     indices = list(range(size))
     random.Random(seed).shuffle(indices)
     return sorted(indices[: min(size, count)])
+
+
+def replace_answers(records, answer_key, answer):
+    """Return record copies with one shared counterfactual answer."""
+    counterfactual = []
+    for record in records:
+        if answer_key not in record:
+            raise KeyError(f"Record lacks '{answer_key}'")
+        updated = dict(record)
+        updated[answer_key] = answer
+        counterfactual.append(updated)
+    return counterfactual
 
 
 def answer_mean_pool(activations, labels):
@@ -338,11 +358,25 @@ def main():
     retain_indices = select_indices(
         len(retain_records), args.num_retain_anchors, args.seed
     )
-    if args.edit_target == "erase_answer_value":
+    if args.edit_target in ("erase_answer_value", "counterfactual_refusal_value"):
         forget_keys, forget_values = extract_kv(
             model, tokenizer, forget_records, module, args, include_values=True
         )
-        desired_deltas = -forget_values
+        if args.edit_target == "erase_answer_value":
+            desired_deltas = -forget_values
+        else:
+            counterfactual_records = replace_answers(
+                forget_records, args.answer_key, args.refusal_answer
+            )
+            _, refusal_values = extract_kv(
+                model,
+                tokenizer,
+                counterfactual_records,
+                module,
+                args,
+                include_values=True,
+            )
+            desired_deltas = refusal_values - forget_values
         retain_keys, _ = extract_kv(
             model,
             tokenizer,
@@ -406,6 +440,11 @@ def main():
         "module": f"model.layers.{args.layer}.mlp.down_proj",
         "strength": args.strength,
         "edit_target": args.edit_target,
+        "refusal_answer": (
+            args.refusal_answer
+            if args.edit_target == "counterfactual_refusal_value"
+            else None
+        ),
         "refusal_system_prompt": (
             args.refusal_system_prompt
             if args.edit_target == "refusal_prompt_value"

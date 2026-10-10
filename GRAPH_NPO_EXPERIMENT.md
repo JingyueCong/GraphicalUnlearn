@@ -307,3 +307,26 @@ the upper model. The target follows factual-loss ascent minus refusal-loss
 descent, normalized to the factual value norm. Control the refusal term with
 `--refusal-gradient-weight` and the activation norm with
 `--gradient-target-scale`. Screen this target without graph regularization.
+
+## Iterative low-rank KV optimization
+
+When a one-shot Jacobian target is limited by linearization, train the same
+low-rank update iteratively and merge it into the selected `down_proj`. The
+objective combines bounded factual-loss ascent, refusal-answer likelihood,
+retain top-k logit distillation, and a retain activation penalty. Only the two
+low-rank factors receive gradients.
+
+```bash
+python scripts/train_iterative_kv_lora.py \
+  --forget-jsonl data/tofu_offline/forget10.json \
+  --retain-jsonl data/tofu_offline/retain90.json \
+  --model-path open-unlearning/tofu_Llama-3.2-1B-Instruct_full \
+  --output-dir saves/unlearn/KV_ITERATIVE_L3_R64_S100 \
+  --layer 3 --rank 64 --steps 100 --batch-size 4 \
+  --learning-rate 5e-3 --forget-weight 1.0 --refusal-weight 0.5 \
+  --retain-distill-weight 5.0 --retain-activation-weight 1.0
+```
+
+Evaluate this target without graph regularization first. If it improves the
+matched-utility frontier, graph structure can then be used to form coherent
+forget mini-batches or regularize neighboring edit responses.

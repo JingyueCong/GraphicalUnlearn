@@ -5,6 +5,7 @@ import os
 import torch
 import logging
 from model.probe import ProbedLlamaForCausalLM
+from model.gated_kv import GatedKVAutoModelForCausalLM
 
 hf_home = os.getenv("HF_HOME", default=None)
 
@@ -105,3 +106,4 @@ def get_tokenizer(tokenizer_cfg: DictConfig):
 # register models
 _register_model(AutoModelForCausalLM)
 _register_model(ProbedLlamaForCausalLM)
+_register_model(GatedKVAutoModelForCausalLM)

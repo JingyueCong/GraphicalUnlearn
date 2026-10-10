@@ -330,3 +330,27 @@ python scripts/train_iterative_kv_lora.py \
 Evaluate this target without graph regularization first. If it improves the
 matched-utility frontier, graph structure can then be used to form coherent
 forget mini-batches or regularize neighboring edit responses.
+
+## Graph-gated low-rank KV adapter
+
+The gated variant retains an aggressive low-rank edit but activates it only
+when the current MLP key is close to a graph-smoothed forget prototype. Build
+the adapter artifact from the base and merged edited checkpoints:
+
+```bash
+python scripts/build_graph_gated_kv_adapter.py \
+  --base-model-path open-unlearning/tofu_Llama-3.2-1B-Instruct_full \
+  --edited-model-path saves/unlearn/KV_ITERATIVE_L3_R64_ST100 \
+  --forget-jsonl data/tofu_offline/forget10.json \
+  --retain-jsonl data/tofu_offline/retain90.json \
+  --graph artifacts/graphs/forget10_mlp_key_layer3.json \
+  --output artifacts/gated_kv/forget10_graph_gate.pt \
+  --layer 3 --rank 64 --graph-alpha 1.0 \
+  --target-retain-fpr 0.01 --temperature 0.02
+```
+
+Evaluate the base checkpoint with
+`model.model_handler=GatedKVAutoModelForCausalLM` and pass the artifact through
+`model.model_args.gated_adapter_path`. The no-graph control uses the same
+command with `--graph-alpha 0`; all other gate calibration and adapter factors
+must remain identical.

@@ -40,6 +40,32 @@ class GraphKVEditTest(unittest.TestCase):
         torch.testing.assert_close(counterfactual, refusal - factual)
         torch.testing.assert_close(middle, torch.tensor([[1.0, 0.0]]))
 
+    def test_shifted_supervision_mask_aligns_labels_with_predictors(self):
+        labels = torch.tensor([[-100, -100, 4, 5, -100]])
+
+        mask = EDIT.shifted_supervision_mask(labels)
+
+        torch.testing.assert_close(
+            mask, torch.tensor([[False, True, True, False, False]])
+        )
+
+    def test_contrastive_gradient_target_has_value_scaled_norm(self):
+        factual_gradient = torch.tensor([[1.0, 0.0]])
+        refusal_gradient = torch.tensor([[0.0, 1.0]])
+        factual_value = torch.tensor([[3.0, 4.0]])
+
+        target = EDIT.contrastive_gradient_target(
+            factual_gradient,
+            refusal_gradient,
+            factual_value,
+            refusal_weight=1.0,
+            target_scale=0.5,
+        )
+
+        torch.testing.assert_close(target.norm(dim=1), torch.tensor([2.5]))
+        self.assertGreater(float(target[0, 0]), 0.0)
+        self.assertLess(float(target[0, 1]), 0.0)
+
     def test_prompt_tokens_include_requested_system_prompt(self):
         class Tokenizer:
             def __init__(self):

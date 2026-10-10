@@ -32,6 +32,7 @@ def parse_args():
             "erase_answer_value",
             "counterfactual_refusal_value",
             "hybrid_refusal_value",
+            "contrastive_output_gradient",
             "refusal_prompt_value",
         ),
         default="erase_answer_value",
@@ -46,6 +47,8 @@ def parse_args():
         default=0.5,
         help="Beta in hybrid target -v_fact + beta*v_refusal.",
     )
+    parser.add_argument("--refusal-gradient-weight", type=float, default=1.0)
+    parser.add_argument("--gradient-target-scale", type=float, default=1.0)
     parser.add_argument(
         "--refusal-system-prompt",
         default=(
@@ -102,13 +105,34 @@ def answer_value_target(factual_values, refusal_values, edit_target, refusal_mix
     raise ValueError(f"unsupported answer value target: {edit_target}")
 
 
-def answer_mean_pool(activations, labels):
-    mask = labels.ne(-100).unsqueeze(-1)
+def masked_mean_pool(activations, mask):
+    mask = mask.unsqueeze(-1)
     counts = mask.sum(dim=1).clamp_min(1)
     return (activations.float() * mask).sum(dim=1) / counts
 
 
-def extract_kv(model, tokenizer, records, module, args, include_values):
+def answer_mean_pool(activations, labels):
+    return masked_mean_pool(activations, labels.ne(-100))
+
+
+def shifted_supervision_mask(labels):
+    """Positions whose logits predict supervised tokens after causal shifting."""
+    import torch
+
+    mask = torch.zeros_like(labels, dtype=torch.bool)
+    mask[:, :-1] = labels[:, 1:].ne(-100)
+    return mask
+
+
+def extract_kv(
+    model,
+    tokenizer,
+    records,
+    module,
+    args,
+    include_values,
+    prediction_positions=False,
+):
     import torch
     from torch.nn.utils.rnn import pad_sequence
 
@@ -157,12 +181,106 @@ def extract_kv(model, tokenizer, records, module, args, include_values):
                     attention_mask=attention_mask,
                     use_cache=False,
                 )
-                keys.append(answer_mean_pool(captured["key"], labels).cpu())
+                mask = (
+                    shifted_supervision_mask(labels)
+                    if prediction_positions
+                    else labels.ne(-100)
+                )
+                keys.append(masked_mean_pool(captured["key"], mask).cpu())
                 if include_values:
-                    values.append(answer_mean_pool(captured["value"], labels).cpu())
+                    values.append(masked_mean_pool(captured["value"], mask).cpu())
     finally:
         handle.remove()
     return torch.cat(keys), torch.cat(values) if values else None
+
+
+def extract_output_gradients(model, tokenizer, records, module, args):
+    """Extract VJP directions at positions that predict supervised answers."""
+    import torch
+    import torch.nn.functional as functional
+    from torch.nn.utils.rnn import pad_sequence
+
+    tokenized = [
+        tokenize_record(
+            tokenizer=tokenizer,
+            record=record,
+            question_key=args.question_key,
+            answer_key=args.answer_key,
+            system_prompt=args.system_prompt,
+            date_string=args.date_string,
+            max_length=args.max_length,
+        )
+        for record in records
+    ]
+    captured = {}
+
+    def capture(_module, inputs, output):
+        leaf = output.detach().requires_grad_(True)
+        captured["key"] = inputs[0].detach()
+        captured["value"] = output.detach()
+        captured["leaf"] = leaf
+        return leaf
+
+    keys, values, gradients = [], [], []
+    handle = module.register_forward_hook(capture)
+    try:
+        for start in range(0, len(tokenized), args.batch_size):
+            batch = tokenized[start : start + args.batch_size]
+            input_ids = pad_sequence(
+                [torch.tensor(item[0]) for item in batch],
+                batch_first=True,
+                padding_value=tokenizer.pad_token_id,
+            ).to(args.device)
+            labels = pad_sequence(
+                [torch.tensor(item[1]) for item in batch],
+                batch_first=True,
+                padding_value=-100,
+            ).to(args.device)
+            attention_mask = pad_sequence(
+                [torch.ones(len(item[0]), dtype=torch.long) for item in batch],
+                batch_first=True,
+                padding_value=0,
+            ).to(args.device)
+            logits = model(
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                use_cache=False,
+            ).logits
+            shifted_labels = labels[:, 1:]
+            loss = functional.cross_entropy(
+                logits[:, :-1].float().reshape(-1, logits.shape[-1]),
+                shifted_labels.reshape(-1),
+                ignore_index=-100,
+                reduction="sum",
+            )
+            loss.backward()
+            mask = shifted_supervision_mask(labels)
+            keys.append(masked_mean_pool(captured["key"], mask).cpu())
+            values.append(masked_mean_pool(captured["value"], mask).cpu())
+            gradients.append(masked_mean_pool(captured["leaf"].grad, mask).cpu())
+    finally:
+        handle.remove()
+    return torch.cat(keys), torch.cat(values), torch.cat(gradients)
+
+
+def contrastive_gradient_target(
+    factual_gradients,
+    refusal_gradients,
+    factual_values,
+    refusal_weight,
+    target_scale,
+):
+    """Build an activation target from factual-loss ascent and refusal-loss descent."""
+    factual_unit = factual_gradients / factual_gradients.norm(
+        dim=1, keepdim=True
+    ).clamp_min(1e-12)
+    refusal_unit = refusal_gradients / refusal_gradients.norm(
+        dim=1, keepdim=True
+    ).clamp_min(1e-12)
+    direction = factual_unit - refusal_weight * refusal_unit
+    direction = direction / direction.norm(dim=1, keepdim=True).clamp_min(1e-12)
+    target_norm = target_scale * factual_values.norm(dim=1, keepdim=True)
+    return target_norm * direction
 
 
 def _prompt_token_ids(tokenizer, record, args, system_prompt):
@@ -355,6 +473,8 @@ def main():
         raise ValueError("rank and retain-anchor count must be positive")
     if not 0 <= args.refusal_mix <= 1:
         raise ValueError("--refusal-mix must be in [0, 1]")
+    if args.refusal_gradient_weight < 0 or args.gradient_target_scale <= 0:
+        raise ValueError("gradient weight must be non-negative and scale positive")
 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -415,6 +535,34 @@ def main():
             module,
             args,
             include_values=False,
+        )
+    elif args.edit_target == "contrastive_output_gradient":
+        for parameter in model.parameters():
+            parameter.requires_grad_(False)
+        forget_keys, forget_values, factual_gradients = extract_output_gradients(
+            model, tokenizer, forget_records, module, args
+        )
+        counterfactual_records = replace_answers(
+            forget_records, args.answer_key, args.refusal_answer
+        )
+        _, _, refusal_gradients = extract_output_gradients(
+            model, tokenizer, counterfactual_records, module, args
+        )
+        desired_deltas = contrastive_gradient_target(
+            factual_gradients,
+            refusal_gradients,
+            forget_values,
+            args.refusal_gradient_weight,
+            args.gradient_target_scale,
+        )
+        retain_keys, _ = extract_kv(
+            model,
+            tokenizer,
+            [retain_records[index] for index in retain_indices],
+            module,
+            args,
+            include_values=False,
+            prediction_positions=True,
         )
     else:
         forget_keys, original_values = extract_prompt_kv(
@@ -479,6 +627,16 @@ def main():
         ),
         "refusal_mix": (
             args.refusal_mix if args.edit_target == "hybrid_refusal_value" else None
+        ),
+        "refusal_gradient_weight": (
+            args.refusal_gradient_weight
+            if args.edit_target == "contrastive_output_gradient"
+            else None
+        ),
+        "gradient_target_scale": (
+            args.gradient_target_scale
+            if args.edit_target == "contrastive_output_gradient"
+            else None
         ),
         "refusal_system_prompt": (
             args.refusal_system_prompt

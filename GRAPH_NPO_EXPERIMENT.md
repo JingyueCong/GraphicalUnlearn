@@ -299,3 +299,11 @@ The interpolation experiment uses `--edit-target hybrid_refusal_value` and
 constructs `-v_factual + beta*v_refusal`. Set beta with `--refusal-mix`; beta
 zero recovers pure erasure and beta one recovers the counterfactual target.
 Sweep beta at fixed strength before adding graph regularization.
+
+The output-gradient experiment uses
+`--edit-target contrastive_output_gradient`. At the causal positions whose
+logits predict answer tokens, it backpropagates factual and refusal NLL through
+the upper model. The target follows factual-loss ascent minus refusal-loss
+descent, normalized to the factual value norm. Control the refusal term with
+`--refusal-gradient-weight` and the activation norm with
+`--gradient-target-scale`. Screen this target without graph regularization.

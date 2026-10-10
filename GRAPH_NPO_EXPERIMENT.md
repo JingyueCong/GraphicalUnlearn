@@ -294,3 +294,8 @@ answer key toward the paired difference between refusal and factual values.
 Override the default refusal with `--refusal-answer`. Screen this target first
 with `--graph-gamma 0`; only add the graph after it improves the erase target
 at matched forget probability.
+
+The interpolation experiment uses `--edit-target hybrid_refusal_value` and
+constructs `-v_factual + beta*v_refusal`. Set beta with `--refusal-mix`; beta
+zero recovers pure erasure and beta one recovers the counterfactual target.
+Sweep beta at fixed strength before adding graph regularization.

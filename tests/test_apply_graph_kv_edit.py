@@ -22,6 +22,24 @@ class GraphKVEditTest(unittest.TestCase):
         self.assertEqual(counterfactual[0]["id"], 7)
         self.assertEqual(records[0]["answer"], "fact")
 
+    def test_hybrid_answer_target_interpolates_erase_and_counterfactual(self):
+        factual = torch.tensor([[2.0, 4.0]])
+        refusal = torch.tensor([[6.0, 8.0]])
+
+        erase = EDIT.answer_value_target(
+            factual, refusal, "hybrid_refusal_value", refusal_mix=0.0
+        )
+        counterfactual = EDIT.answer_value_target(
+            factual, refusal, "hybrid_refusal_value", refusal_mix=1.0
+        )
+        middle = EDIT.answer_value_target(
+            factual, refusal, "hybrid_refusal_value", refusal_mix=0.5
+        )
+
+        torch.testing.assert_close(erase, -factual)
+        torch.testing.assert_close(counterfactual, refusal - factual)
+        torch.testing.assert_close(middle, torch.tensor([[1.0, 0.0]]))
+
     def test_prompt_tokens_include_requested_system_prompt(self):
         class Tokenizer:
             def __init__(self):

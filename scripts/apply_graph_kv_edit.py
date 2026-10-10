@@ -31,6 +31,7 @@ def parse_args():
         choices=(
             "erase_answer_value",
             "counterfactual_refusal_value",
+            "hybrid_refusal_value",
             "refusal_prompt_value",
         ),
         default="erase_answer_value",
@@ -38,6 +39,12 @@ def parse_args():
     parser.add_argument(
         "--refusal-answer",
         default="I don't know the answer to that question.",
+    )
+    parser.add_argument(
+        "--refusal-mix",
+        type=float,
+        default=0.5,
+        help="Beta in hybrid target -v_fact + beta*v_refusal.",
     )
     parser.add_argument(
         "--refusal-system-prompt",
@@ -80,6 +87,19 @@ def replace_answers(records, answer_key, answer):
         updated[answer_key] = answer
         counterfactual.append(updated)
     return counterfactual
+
+
+def answer_value_target(factual_values, refusal_values, edit_target, refusal_mix):
+    """Construct erase, counterfactual, or interpolated answer-value targets."""
+    if edit_target == "erase_answer_value":
+        return -factual_values
+    if refusal_values is None:
+        raise ValueError("refusal values are required for a refusal answer target")
+    if edit_target == "counterfactual_refusal_value":
+        return refusal_values - factual_values
+    if edit_target == "hybrid_refusal_value":
+        return -factual_values + refusal_mix * refusal_values
+    raise ValueError(f"unsupported answer value target: {edit_target}")
 
 
 def answer_mean_pool(activations, labels):
@@ -333,6 +353,8 @@ def main():
         raise ValueError("regularization weights must be non-negative and ridge positive")
     if args.rank < 1 or args.num_retain_anchors < 1:
         raise ValueError("rank and retain-anchor count must be positive")
+    if not 0 <= args.refusal_mix <= 1:
+        raise ValueError("--refusal-mix must be in [0, 1]")
 
     import torch
     from transformers import AutoModelForCausalLM, AutoTokenizer
@@ -358,13 +380,17 @@ def main():
     retain_indices = select_indices(
         len(retain_records), args.num_retain_anchors, args.seed
     )
-    if args.edit_target in ("erase_answer_value", "counterfactual_refusal_value"):
+    answer_targets = (
+        "erase_answer_value",
+        "counterfactual_refusal_value",
+        "hybrid_refusal_value",
+    )
+    if args.edit_target in answer_targets:
         forget_keys, forget_values = extract_kv(
             model, tokenizer, forget_records, module, args, include_values=True
         )
-        if args.edit_target == "erase_answer_value":
-            desired_deltas = -forget_values
-        else:
+        refusal_values = None
+        if args.edit_target != "erase_answer_value":
             counterfactual_records = replace_answers(
                 forget_records, args.answer_key, args.refusal_answer
             )
@@ -376,7 +402,12 @@ def main():
                 args,
                 include_values=True,
             )
-            desired_deltas = refusal_values - forget_values
+        desired_deltas = answer_value_target(
+            forget_values,
+            refusal_values,
+            args.edit_target,
+            args.refusal_mix,
+        )
         retain_keys, _ = extract_kv(
             model,
             tokenizer,
@@ -442,8 +473,12 @@ def main():
         "edit_target": args.edit_target,
         "refusal_answer": (
             args.refusal_answer
-            if args.edit_target == "counterfactual_refusal_value"
+            if args.edit_target
+            in ("counterfactual_refusal_value", "hybrid_refusal_value")
             else None
+        ),
+        "refusal_mix": (
+            args.refusal_mix if args.edit_target == "hybrid_refusal_value" else None
         ),
         "refusal_system_prompt": (
             args.refusal_system_prompt

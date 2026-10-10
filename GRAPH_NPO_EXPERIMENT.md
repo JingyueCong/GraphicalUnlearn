@@ -353,4 +353,6 @@ Evaluate the base checkpoint with
 `model.model_handler=GatedKVAutoModelForCausalLM` and pass the artifact through
 `model.model_args.gated_adapter_path`. The no-graph control uses the same
 command with `--graph-alpha 0`; all other gate calibration and adapter factors
-must remain identical.
+must remain identical. Gate thresholds are calibrated on individual causal
+prediction-token keys, matching the granularity used by the runtime hook;
+record-mean keys are used only to construct graph prototypes.
